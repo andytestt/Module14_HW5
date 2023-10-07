@@ -4,6 +4,10 @@ import logging
 import argparse
 import aiohttp
 import asyncio
+import websockets
+import json
+import aiofiles
+from aiopath import AsyncPath
 
 async def request(url: str):
     async with aiohttp.ClientSession() as session:
@@ -47,9 +51,31 @@ async def get_exchange(currency_code: str, days: int):
 
     return exchange_rates
 
+async def log_exchange(command, filename):
+    async with aiofiles.open(filename, mode='a') as file:
+        await file.write(f"{datetime.now()}: {command}\n")
+
+async def exchange_handler(websocket, path):
+    async for command in websocket:
+        if command.startswith("exchange"):
+            _, days_str = command.split()
+            try:
+                days = int(days_str)
+                if days < 1 or days > 10:
+                    await websocket.send("Error: Number of days should be between 1 and 10.")
+                    continue
+                exchange_rates = await get_exchange("EUR", days)
+                await websocket.send(json.dumps(exchange_rates))
+                await log_exchange(command, "exchange.log")
+            except ValueError:
+                await websocket.send("Error: Invalid number of days.")
+        else:
+            await websocket.send("Unknown command.")
+
 def main():
     parser = argparse.ArgumentParser(description='Get exchange rates from PrivatBank')
     parser.add_argument('days', type=int, help='Number of days to retrieve exchange rates (up to 10 days)')
+    parser.add_argument('--currencies', nargs='+', default=['EUR', 'USD'], help='Additional currencies to retrieve')
     args = parser.parse_args()
 
     if args.days > 10 or args.days < 1:
@@ -61,6 +87,10 @@ def main():
     loop = asyncio.get_event_loop()
     exchange_rates = loop.run_until_complete(get_exchange("EUR", args.days))
     print(exchange_rates)
+
+    start_server = websockets.serve(exchange_handler, 'localhost', 8765)
+    loop.run_until_complete(start_server)
+    loop.run_forever()
 
 
 if __name__ == "__main__":
